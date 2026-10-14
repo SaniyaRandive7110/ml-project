@@ -1,58 +1,61 @@
 pipeline {
-    agent any
+  agent any
 
-    environment {
-        IMAGE_NAME = "ml-project"
+  environment {
+    IMAGE = "saniya7110/ml-api-2"
+    TAG   = "${env.BUILD_NUMBER}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
     }
 
-    stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                sh '''
-                python3 -m venv venv
-                . venv/bin/activate
-                pip install --upgrade pip
-                pip install -r requirements.txt
-                '''
-            }
-        }
-
-        stage('Train Model') {
-            steps {
-                sh '. venv/bin/activate && python train.py'
-            }
-        }
-
-        stage('Test') {
-            steps {
-                sh '. venv/bin/activate && pytest -v test_model.py'
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                sh 'docker build -t $IMAGE_NAME:${BUILD_NUMBER} .'
-            }
-        }
-
-        stage('Run Container') {
-            steps {
-                sh '''
-                docker rm -f ml-app || true
-                docker run -d --name ml-app -p 5000:5000 $IMAGE_NAME:${BUILD_NUMBER}
-                '''
-            }
-        }
+    stage('Test') {
+      steps {
+        sh '''
+          cd api
+          python3 -m venv venv
+          . venv/bin/activate
+          pip install -r requirements.txt
+          pytest -q
+        '''
+      }
     }
 
-    post {
-        success { echo 'Pipeline succeeded' }
-        failure { echo 'Pipeline failed' }
+    stage('Build Image') {
+      steps {
+        sh 'docker build -t $IMAGE:$TAG -t $IMAGE:latest ./api'
+      }
     }
+
+    stage('Push Image') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub',
+                         usernameVariable: 'DH_USER',
+                         passwordVariable: 'DH_PASS')]) {
+          sh '''
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+            docker push $IMAGE:$TAG
+            docker push $IMAGE:latest
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to Kubernetes') {
+      steps {
+        sh '''
+          kubectl set image deployment/ml-api ml-api=$IMAGE:$TAG
+          kubectl rollout status deployment/ml-api --timeout=180s
+          kubectl get pods
+        '''
+      }
+    }
+  }
+
+  post {
+    success { echo "Deployed $IMAGE:$TAG successfully" }
+    failure { echo "Pipeline failed - check the console output" }
+  }
 }
